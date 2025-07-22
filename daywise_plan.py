@@ -5,15 +5,10 @@ def generate_daywise_plan(query: str, destination:str,interest:str,weather_data:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
     from langchain.chains import RetrievalQA
     from langchain_community.vectorstores import Chroma
-
+    from langchain_groq import ChatGroq
     # destination = parsed["destination"]
     country = "India"
-    # interest = parsed.get("preferences", "sightseeing")
-    # weather_data = parsed.get("weather_data", [])
-    # duration = parsed.get("duration", "3")  # Default to 3 days if not specified
-    # arrival_time=parsed.get("arrival_time","14:00")
-    # arrival_date=parsed.get("start_date")
-    # Format weather context for the LLM
+
     weather_context = []
     for day in weather_data:
         weather_context.append(
@@ -47,7 +42,7 @@ def generate_daywise_plan(query: str, destination:str,interest:str,weather_data:
 
     # Retrieval + LLM
     retriever = db.as_retriever(search_kwargs={"k": 5})
-    llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-70b-8192")
+    llm = ChatGroq(groq_api_key="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", model_name="llama3-70b-8192")
     qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
     print("Persons passed in generate_daywise_plan : ",{persons})
     

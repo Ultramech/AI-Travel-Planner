@@ -12,7 +12,16 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 import pandas as pd
 
 def extract_trip_fields(user_input:str):
+    from langchain.prompts import PromptTemplate
+    from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+    from langchain_groq import ChatGroq
+    from langchain.schema.messages import HumanMessage
+    from langchain.memory import ConversationBufferMemory
 
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    groq_api_key = os.getenv("GROQ_API_KEY")
     # 1. Define the fields to extract
     response_schemas = [
         ResponseSchema(name="origin", description="Starting location (e.g., Delhi)"),
@@ -21,7 +30,7 @@ def extract_trip_fields(user_input:str):
         ResponseSchema(name="end_date", description="End date of trip (YYYY-MM-DD)"),
         ResponseSchema(name="duration", description="Duration of trip (in days)"),
         # ResponseSchema(name="budget", description="Approximate budget in INR"),
-        ResponseSchema(name="preferences", description="List of interests like food, nature, adventure"),
+        ResponseSchema(name="preferences", description="List of interests like food, nature, adventure,shopping,sightseeing,culture and history"),
         ResponseSchema(name="src_IATA", description="Origin IATA code"),
         ResponseSchema(name="dest_IATA", description="Destination IATA code"),
         ResponseSchema(name="nearby_src_city", description="Source IATA code city "),
