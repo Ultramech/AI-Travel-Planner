@@ -1,0 +1,31 @@
+# Keep the build context small and never ship secrets or local state into an
+# image. Without this, `.env`, the 400 MB virtualenv and every notebook are
+# sent to the daemon and baked into layers.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite3
+
+# Not needed at runtime
+.git/
+.gitignore
+tests/
+legacy/
+notebooks/
+*.ipynb
+output/
+*.exe
+*.png
+docs/
+README.md
+SESSION_HANDOFF.md

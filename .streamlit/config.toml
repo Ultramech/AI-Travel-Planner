@@ -1,0 +1,14 @@
+# Dark-first base tokens. The app's own CSS in ui/streamlit_app.py builds on
+# these — keep the two palettes in sync if you change either.
+[theme]
+base = "dark"
+primaryColor = "#FF6B4A"
+backgroundColor = "#0B0F17"
+secondaryBackgroundColor = "#131A26"
+textColor = "#E8EDF5"
+
+[server]
+runOnSave = false
+
+[browser]
+gatherUsageStats = false

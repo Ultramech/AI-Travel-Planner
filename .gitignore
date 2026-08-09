@@ -1,0 +1,36 @@
+# Secrets — never commit these again
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Local state
+data/checkpoints/
+*.sqlite
+*.sqlite3
+*.db
+
+# Stray binaries / build junk that was previously committed
+output/
+*.exe
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Exploration notebooks — the working code lives in app/, the original v1
+# sources are preserved in legacy/
+*.ipynb
+.ipynb_checkpoints/
+
+# Build/test caches
+.pytest_cache/

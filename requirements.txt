@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# AI Travel Planner — Python 3.11
+# ---------------------------------------------------------------------------
+
+# --- Web / API layer -------------------------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+sse-starlette==3.4.8
+httpx==0.28.1
+
+# --- LangGraph / LangChain -------------------------------------------------
+langgraph==0.2.62
+langgraph-checkpoint==2.1.2   # 2.0.9 cannot satisfy checkpoint-postgres
+langgraph-checkpoint-sqlite==2.0.1
+langchain-core==0.3.29
+langchain==0.3.14
+langchain-community==0.3.14
+langchain-groq==0.2.3
+langchain-text-splitters==0.3.5
+
+# --- Infrastructure --------------------------------------------------------
+redis==5.2.1
+aiokafka==0.12.0
+tenacity==9.0.0
+
+# --- Database (durable trip history) ---------------------------------------
+# Optional at runtime: with no DATABASE_URL the app runs without persistence.
+# asyncpg drives the app; psycopg drives the LangGraph Postgres checkpointer
+# (different libraries, both needed — see app/db/session.py).
+sqlalchemy[asyncio]==2.0.51
+asyncpg==0.31.0
+alembic==1.19.1
+langgraph-checkpoint-postgres==2.0.25
+psycopg[binary,pool]==3.3.4
+
+# --- Providers / data ------------------------------------------------------
+amadeus==12.0.0
+protobuf>=7          # fast-flights needs >=6; streamlit>=1.61 allows it
+fast-flights==3.0.2          # keyless Google Flights source
+pandas==2.2.3
+openpyxl==3.1.5
+selenium==4.27.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+python-dotenv==1.0.1
+
+# --- UI --------------------------------------------------------------------
+streamlit==1.61.1
+
+# --- Optional: local RAG over WikiVoyage -----------------------------------
+# The itinerary provider works without these (falls back to a cached
+# summarise-the-page strategy). Install only if you want vector retrieval.
+# langchain-huggingface==0.1.2
+# sentence-transformers==3.3.1
+# chromadb==0.5.23
+
+# --- Dev -------------------------------------------------------------------
+pytest==8.3.4
+pytest-asyncio==0.25.2
