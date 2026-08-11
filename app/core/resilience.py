@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TypeVar
 
+from app.core import chaos
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -175,12 +177,18 @@ def resilient(
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
             breaker.check()
-            last_exc: Exception | None = None
+            last_message: str | None = None
             started = time.perf_counter()
 
             for attempt in range(retries + 1):
                 try:
-                    result = await asyncio.wait_for(
+                    # Every provider passes through here, so this is the single
+                    # place a fault can be injected without any provider knowing
+                    # it exists. See app/core/chaos.py.
+                    injected = await asyncio.wait_for(
+                        chaos.apply(provider), timeout=timeout
+                    )
+                    result = injected if injected is not None else await asyncio.wait_for(
                         func(*args, **kwargs), timeout=timeout
                     )
                     breaker.record_success()
@@ -193,8 +201,12 @@ def resilient(
                         result=result,
                     )
                     return result
-                except asyncio.TimeoutError as exc:
-                    last_exc = exc
+                except asyncio.TimeoutError:
+                    # ``str(TimeoutError())`` is the empty string, so this used
+                    # to surface to the user, the audit log and /health as the
+                    # literal text "unknown failure" — the one failure mode we
+                    # always know the cause of, reported as the one we do not.
+                    last_message = f"timed out after {timeout:.0f}s"
                     logger.warning(
                         "%s timed out after %.0fs (attempt %d/%d).",
                         provider,
@@ -205,7 +217,7 @@ def resilient(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    last_exc = exc
+                    last_message = str(exc) or type(exc).__name__
                     logger.warning(
                         "%s failed (attempt %d/%d): %s",
                         provider,
@@ -225,9 +237,9 @@ def resilient(
                 ok=False,
                 started=started,
                 attempts=retries + 1,
-                error=str(last_exc) or "unknown failure",
+                error=last_message or "unknown failure",
             )
-            raise ProviderError(provider, str(last_exc) or "unknown failure")
+            raise ProviderError(provider, last_message or "unknown failure")
 
         return wrapper
 

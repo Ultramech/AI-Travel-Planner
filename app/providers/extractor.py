@@ -56,6 +56,15 @@ class TripBrief(BaseModel):
     destination_iata: Optional[str] = None
     origin_airport_city: Optional[str] = None
     destination_airport_city: Optional[str] = None
+    # False when the airport/railhead belongs to a *different* city than the one
+    # the user named — i.e. the journey needs a connecting leg. These were being
+    # computed and then ignored; ``providers.journey`` now acts on them.
+    origin_airport_exact: bool = True
+    destination_airport_exact: bool = True
+    origin_railhead_city: Optional[str] = None
+    destination_railhead_city: Optional[str] = None
+    origin_railhead_exact: bool = True
+    destination_railhead_exact: bool = True
 
     @field_validator("origin", "destination")
     @classmethod
@@ -239,16 +248,26 @@ async def build_brief(
     # Deterministic airport resolution, in parallel.
     import asyncio
 
-    src_info, dst_info = await asyncio.gather(
+    src_info, dst_info, src_rail, dst_rail = await asyncio.gather(
         geo.resolve_airport(brief.origin),
         geo.resolve_airport(brief.destination),
+        geo.resolve_railhead(brief.origin),
+        geo.resolve_railhead(brief.destination),
         return_exceptions=True,
     )
     if isinstance(src_info, dict):
         brief.origin_iata = src_info.get("iata")
         brief.origin_airport_city = src_info.get("airport_city")
+        brief.origin_airport_exact = bool(src_info.get("exact"))
     if isinstance(dst_info, dict):
         brief.destination_iata = dst_info.get("iata")
         brief.destination_airport_city = dst_info.get("airport_city")
+        brief.destination_airport_exact = bool(dst_info.get("exact"))
+    if isinstance(src_rail, dict):
+        brief.origin_railhead_city = src_rail.get("station_city")
+        brief.origin_railhead_exact = bool(src_rail.get("exact"))
+    if isinstance(dst_rail, dict):
+        brief.destination_railhead_city = dst_rail.get("station_city")
+        brief.destination_railhead_exact = bool(dst_rail.get("exact"))
 
     return brief

@@ -11,6 +11,7 @@ Endpoints
     POST   /api/v1/trips/{id}/resume      answer a human-review interrupt
     GET    /api/v1/trips/{id}/stream      SSE progress feed
     GET    /api/v1/trips/{id}/history     checkpoint audit trail
+    GET    /api/v1/trips/{id}/rationale   why this option was recommended
     GET    /api/v1/trips/{id}/providers   provider-call audit log
     GET    /api/v1/trips/{id}/itinerary   markdown export
     GET    /api/v1/providers/stats        provider reliability, aggregated
@@ -272,6 +273,34 @@ async def stream_trip(trip_id: str) -> EventSourceResponse:
 @router.get("/api/v1/trips/{trip_id}/history", tags=["trips"])
 async def trip_history(trip_id: str, limit: int = Query(default=20, ge=1, le=100)):
     return {"trip_id": trip_id, "checkpoints": await planner.get_history(trip_id, limit)}
+
+
+@router.get("/api/v1/trips/{trip_id}/rationale", tags=["trips"])
+async def trip_rationale(trip_id: str):
+    """Why this trip was recommended — the decision, opened up.
+
+    An LLM recommendation you cannot audit is indistinguishable from one that
+    is wrong, and over a day of running this system the model double-counted a
+    group fare, read a 24-hour train as a 30-minute hop, and asserted that
+    flights were unavailable on a route nothing had searched.
+
+    So every recommendation carries its own working: each option with its real
+    door-to-door cost and time, the weights applied for this traveller's budget
+    level, which modes were skipped and *why*, which prices are estimates rather
+    than quotes, and whether the model's prose actually matches the arithmetic.
+    """
+    try:
+        trip = await planner.get_trip(trip_id)
+    except planner.TripNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    rationale = trip.get("decision_rationale")
+    if not rationale:
+        raise HTTPException(
+            status_code=404,
+            detail="No recommendation has been made for this trip yet.",
+        )
+    return {"trip_id": trip_id, **rationale}
 
 
 @router.get("/api/v1/trips/{trip_id}/providers", tags=["trips"])

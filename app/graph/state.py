@@ -50,10 +50,22 @@ class TripState(TypedDict, total=False):
     # --- transport ---------------------------------------------------------
     transport_strategy: Annotated[Optional[dict[str, Any]], take_last]
     transport_options: Annotated[dict[str, Any], merge_dict]
+    #: The journey home. Kept separate from ``transport_options`` so it can
+    #: never be mistaken for an outbound choice or double-counted in the budget.
+    return_options: Annotated[dict[str, Any], merge_dict]
     transport_summary: Annotated[Optional[str], take_last]
     recommended_transport: Annotated[Optional[dict[str, Any]], take_last]
     arrival_time: Annotated[Optional[str], take_last]
     arrival_date: Annotated[Optional[str], take_last]
+    # Surface legs to/from the airport or railhead when the origin or
+    # destination has none of its own. Replaced wholesale on each search rather
+    # than merged, so a revision cannot leave a stale leg behind.
+    connecting_legs: Annotated[Optional[list[dict[str, Any]]], take_last]
+    #: How the recommendation was reached: every option scored, what was
+    #: skipped and why, and whether the model's prose matches the arithmetic.
+    decision_rationale: Annotated[Optional[dict[str, Any]], take_last]
+    #: What the same flights cost on the days either side of the one requested.
+    date_flexibility: Annotated[Optional[dict[str, Any]], take_last]
 
     # --- enrichment --------------------------------------------------------
     weather: Annotated[Optional[list[dict[str, Any]]], take_last]

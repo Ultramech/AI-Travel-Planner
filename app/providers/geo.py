@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 IATA_CSV = PROJECT_ROOT / "full_iata_codes.csv"
 STATIONS_XLSX = PROJECT_ROOT / "Station_Name_8477.xlsx"
+STATIONS_SUPPLEMENT = PROJECT_ROOT / "data" / "stations_supplement.csv"
+IATA_SUPPLEMENT = PROJECT_ROOT / "data" / "iata_supplement.csv"
 
 # Railway station category ranking: NSG1 are the big terminals, HG/SG are
 # suburban and halt stations we never want to route long-distance travel through.
@@ -80,6 +82,15 @@ def _iata_table() -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not read %s: %s", IATA_CSV, exc)
         return {}
+    # The bundled CSV holds 98 airports and is missing several obvious ones —
+    # Jaipur among them, so a very ordinary destination fell through to an LLM
+    # guess in a module whose whole purpose is not guessing.
+    if IATA_SUPPLEMENT.exists():
+        try:
+            df = pd.concat([df, pd.read_csv(IATA_SUPPLEMENT)], ignore_index=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("IATA supplement unreadable (%s); continuing.", exc)
+
     table: dict[str, str] = {}
     for _, row in df.iterrows():
         city = normalise_city(row.get("City", ""))
@@ -106,6 +117,71 @@ def lookup_iata(city: str) -> Optional[str]:
     return None
 
 
+# Well-known Indian destinations with no usable airport of their own, and the
+# gateway people actually use. This exists for three reasons:
+#
+#   1. It removes the LLM from the common path. When Groq's daily token cap ran
+#      out mid-run, ``resolve_airport`` returned "unresolved", the strategy node
+#      skipped flights entirely, and a Gangtok→Kochi trip lost every flight,
+#      every connecting leg and its whole budget. A quota should degrade the
+#      prose, not delete the itinerary.
+#   2. The LLM's answer is sometimes technically right and practically useless:
+#      it offered Agra (AGR) for Aligarh, and AGR has almost no scheduled
+#      service. Delhi is the honest answer.
+#   3. It is faster and free.
+#
+# ``railhead`` is the long-distance station people actually board at.
+_GATEWAYS: dict[str, dict[str, str]] = {
+    "shimla":      {"airport_city": "Chandigarh",  "railhead": "Kalka"},
+    "manali":      {"airport_city": "Bhuntar",     "railhead": "Chandigarh"},
+    "kasol":       {"airport_city": "Bhuntar",     "railhead": "Chandigarh"},
+    "dharamshala": {"airport_city": "Dharamshala", "railhead": "Pathankot"},
+    "gangtok":     {"airport_city": "Bagdogra",    "railhead": "New Jalpaiguri"},
+    "darjeeling":  {"airport_city": "Bagdogra",    "railhead": "New Jalpaiguri"},
+    "munnar":      {"airport_city": "Kochi",       "railhead": "Aluva"},
+    "alleppey":    {"airport_city": "Kochi",       "railhead": "Alappuzha"},
+    "kumarakom":   {"airport_city": "Kochi",       "railhead": "Kottayam"},
+    "varkala":     {"airport_city": "Thiruvananthapuram", "railhead": "Varkala"},
+    "wayanad":     {"airport_city": "Kozhikode",   "railhead": "Kozhikode"},
+    "coorg":       {"airport_city": "Mangalore",   "railhead": "Mysuru"},
+    "madikeri":    {"airport_city": "Mangalore",   "railhead": "Mysuru"},
+    "chikmagalur": {"airport_city": "Mangalore",   "railhead": "Hubballi"},
+    "hampi":       {"airport_city": "Hubli",       "railhead": "Hubballi"},
+    "gokarna":     {"airport_city": "Goa",         "railhead": "Madgaon"},
+    "ooty":        {"airport_city": "Coimbatore",  "railhead": "Coimbatore"},
+    "udhagamandalam": {"airport_city": "Coimbatore", "railhead": "Coimbatore"},
+    "kodaikanal":  {"airport_city": "Madurai",     "railhead": "Madurai"},
+    "mussoorie":   {"airport_city": "Dehradun",    "railhead": "Dehradun"},
+    "rishikesh":   {"airport_city": "Dehradun",    "railhead": "Haridwar"},
+    "haridwar":    {"airport_city": "Dehradun",    "railhead": "Haridwar"},
+    "auli":        {"airport_city": "Dehradun",    "railhead": "Dehradun"},
+    "joshimath":   {"airport_city": "Dehradun",    "railhead": "Dehradun"},
+    "nainital":    {"airport_city": "Pantnagar",   "railhead": "Kathgodam"},
+    "almora":      {"airport_city": "Pantnagar",   "railhead": "Kathgodam"},
+    "mount abu":   {"airport_city": "Udaipur",     "railhead": "Abu Road"},
+    "pushkar":     {"airport_city": "Jaipur",      "railhead": "Ajmer"},
+    "ajmer":       {"airport_city": "Jaipur",      "railhead": "Ajmer"},
+    "jaisalmer":   {"airport_city": "Jodhpur",     "railhead": "Jaisalmer"},
+    # Agra's airport carries almost no scheduled traffic; Delhi is the real one.
+    "aligarh":     {"airport_city": "Delhi",       "railhead": "Aligarh"},
+    "mathura":     {"airport_city": "Delhi",       "railhead": "Mathura"},
+    "vrindavan":   {"airport_city": "Delhi",       "railhead": "Mathura"},
+    "shirdi":      {"airport_city": "Shirdi",      "railhead": "Ahmednagar"},
+    "mahabaleshwar": {"airport_city": "Pune",      "railhead": "Pune"},
+    "lonavala":    {"airport_city": "Pune",        "railhead": "Lonavala"},
+    "panchgani":   {"airport_city": "Pune",        "railhead": "Pune"},
+    "ranthambore": {"airport_city": "Jaipur",      "railhead": "Sawai Madhopur"},
+    "khajuraho":   {"airport_city": "Khajuraho",   "railhead": "Khajuraho"},
+    "spiti":       {"airport_city": "Bhuntar",     "railhead": "Shimla"},
+    "leh":         {"airport_city": "Leh",         "railhead": "Jammu"},
+    "patiala":     {"airport_city": "Chandigarh",  "railhead": "Patiala"},
+}
+
+
+def gateway_for(city: str) -> Optional[dict[str, str]]:
+    return _GATEWAYS.get(normalise_city(city))
+
+
 @cached("geo:iata", ttl=settings.ttl_iata)
 async def resolve_airport(city: str) -> dict[str, Any]:
     """Resolve a city to a usable airport.
@@ -123,6 +199,20 @@ async def resolve_airport(city: str) -> dict[str, Any]:
             "exact": True,
             "source": "dataset",
         }
+
+    # A curated gateway beats an LLM guess: deterministic, instant, and it
+    # still works when the model is rate-limited.
+    gateway = gateway_for(city)
+    if gateway:
+        code = lookup_iata(gateway["airport_city"])
+        if code:
+            return {
+                "city": city,
+                "iata": code,
+                "airport_city": gateway["airport_city"],
+                "exact": False,
+                "source": "gateway_table",
+            }
 
     # Not in the dataset — ask the LLM for the nearest served airport, then
     # validate its answer back against the dataset so a hallucinated code
@@ -190,6 +280,23 @@ def _stations() -> pd.DataFrame:
         )
 
     df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
+
+    # The bundled spreadsheet has 8,477 rows and yet almost no Kerala coverage —
+    # "Kozhikkode" is the only entry for the entire state, so Kochi, Thrissur,
+    # Alappuzha and Thiruvananthapuram all resolved to "no railway station in the
+    # dataset". Also missing: Madgaon (the Goa railhead), Hubballi, Belagavi,
+    # Udupi and Tiruchirappalli. This supplement fills those in rather than
+    # reporting a data gap as though no trains ran there.
+    if STATIONS_SUPPLEMENT.exists():
+        try:
+            extra = pd.read_csv(STATIONS_SUPPLEMENT)
+            missing = [c for c in df.columns if c not in extra.columns]
+            for column in missing:
+                extra[column] = None
+            df = pd.concat([df, extra[df.columns]], ignore_index=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Station supplement unreadable (%s); continuing.", exc)
+
     df["Station Name"] = df["Station Name"].astype(str)
     df["Station Code"] = df["Station Code"].astype(str).str.strip().str.upper()
     df["_name_norm"] = df["Station Name"].map(normalise_city)
@@ -200,20 +307,68 @@ def _stations() -> pd.DataFrame:
     return df
 
 
+# Cities whose main long-distance terminus sits in a *neighbouring* town and so
+# never matches on name or district. Kolkata is the costly one: its top matches
+# are Sealdah and Kolkata station, while most western- and northern-bound
+# expresses — including the only direct Jaisalmer service — leave from Howrah,
+# which the dataset files under its own district. Without this, a perfectly
+# ordinary Kolkata→Jaisalmer request answered "no direct trains".
+# Kept deliberately short: only cities whose principal long-distance terminus is
+# genuinely filed under another name. Anything else is left to
+# ``resolve_railhead``, because padding this map dilutes the category ranking
+# and pushes a city's own terminals down the list.
+_CITY_EXTRA_STATION_CITIES = {
+    "kolkata": ["howrah"],
+    "hyderabad": ["secunderabad"],
+    "delhi": ["hazrat nizamuddin"],
+    "kochi": ["ernakulam"],
+}
+
+
+# Colloquial spellings that differ from the railway's own. Deliberately kept
+# separate from ``_CITY_ALIASES``: that map feeds airport lookup too, and the
+# IATA dataset spells several of these the *other* way round — "hubli" has an
+# airport entry while "hubballi" does not, so folding them globally would fix
+# the station and break the flight.
+_STATION_CITY_ALIASES = {
+    "trichy": "tiruchchirappalli",
+    "tiruchirappalli": "tiruchchirappalli",
+    "hubli": "hubballi",
+    "belgaum": "belagavi",
+    "calicut": "kozhikode",
+    "alleppey": "alappuzha",
+    "quilon": "kollam",
+    "ernakulam": "ernakulam",
+}
+
+
+def _matching_rows(df: Any, key: str) -> Any:
+    pattern = r"\b" + re.escape(key) + r"\b"
+    return df[
+        df["_name_norm"].str.contains(pattern, na=False, regex=True)
+        | df["_district_norm"].str.contains(pattern, na=False, regex=True)
+    ]
+
+
 def lookup_stations(city: str, limit: int = 3) -> list[dict[str, str]]:
     """Return the most important stations for a city, best first."""
     key = normalise_city(city)
     if not key:
         return []
+    key = _STATION_CITY_ALIASES.get(key, key)
     df = _stations()
     if df.empty:
         return []
 
-    pattern = r"\b" + re.escape(key) + r"\b"
-    matches = df[
-        df["_name_norm"].str.contains(pattern, na=False, regex=True)
-        | df["_district_norm"].str.contains(pattern, na=False, regex=True)
-    ]
+    matches = _matching_rows(df, key)
+
+    # Fold in the neighbouring terminus, then let the category ranking below
+    # decide the order — Howrah is NSG1 and correctly outranks Sealdah's
+    # suburban siblings on its own merits.
+    for extra in _CITY_EXTRA_STATION_CITIES.get(key, []):
+        extra_rows = _matching_rows(df, normalise_city(extra))
+        if not extra_rows.empty:
+            matches = pd.concat([matches, extra_rows])
     if matches.empty:
         matches = df[df["_district_norm"] == key]
     if matches.empty:
@@ -239,6 +394,68 @@ def lookup_stations(city: str, limit: int = 3) -> list[dict[str, str]]:
         if len(out) >= limit:
             break
     return out
+
+
+@cached("geo:railhead", ttl=settings.ttl_iata)
+async def resolve_railhead(city: str) -> dict[str, Any]:
+    """Resolve a city to a usable railway station, borrowing a neighbour's if needed.
+
+    ``lookup_stations`` returns ``[]`` for places with no railway at all —
+    Gangtok, Coorg, Munnar, most of the hills. The train provider then answered
+    "no railway station found in the dataset", which is true but useless: the
+    real answer is "the railhead is New Jalpaiguri, 125 km away". This mirrors
+    ``resolve_airport``: dataset first, LLM only for what the dataset cannot
+    know, and the LLM's answer validated back against the dataset.
+    """
+    own = lookup_stations(city, limit=3)
+    if own:
+        return {
+            "city": city,
+            "station_city": city,
+            "stations": own,
+            "exact": True,
+            "source": "dataset",
+        }
+
+    gateway = gateway_for(city)
+    if gateway:
+        stations = lookup_stations(gateway["railhead"], limit=3)
+        if stations:
+            return {
+                "city": city,
+                "station_city": gateway["railhead"],
+                "stations": stations,
+                "exact": False,
+                "source": "gateway_table",
+            }
+
+    prompt = (
+        f"The Indian town '{city}' has no railway station of its own.\n"
+        "Which nearby city is its usual railhead for long-distance trains?\n"
+        'Reply with JSON only: {"railhead_city": "<city name>"}'
+    )
+    try:
+        data = await llm_provider.ask_json(prompt)
+        railhead = str(data.get("railhead_city", "")).strip()
+        stations = lookup_stations(railhead, limit=3) if railhead else []
+        if not stations:
+            raise ValueError(f"no station found for suggested railhead {railhead!r}")
+        return {
+            "city": city,
+            "station_city": railhead,
+            "stations": stations,
+            "exact": False,
+            "source": "llm+dataset",
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Railhead resolution failed for %s: %s", city, exc)
+        return {
+            "city": city,
+            "station_city": None,
+            "stations": [],
+            "exact": False,
+            "source": "unresolved",
+        }
 
 
 def station_slug(name: str, code: str) -> str:

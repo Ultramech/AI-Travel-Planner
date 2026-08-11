@@ -112,12 +112,24 @@ async def test_invalid_requests_are_rejected(client, payload, reason):
 
 @pytest.mark.asyncio
 async def test_valid_request_is_accepted_and_queued(client, monkeypatch):
+    from app.api import routes
     from app.services import planner
 
     async def fake_set_queued(trip_id, request):
         return None
 
     monkeypatch.setattr(planner, "set_queued", fake_set_queued)
+
+    # With Kafka disabled the endpoint degrades to planning in a background
+    # task. That is correct behaviour and worth keeping — but this test is about
+    # the 202 contract, not about running a real trip, and letting it through
+    # made the suite scrape live sites for two minutes.
+    ran: list[str] = []
+
+    async def fake_inline(trip_id, payload):
+        ran.append(trip_id)
+
+    monkeypatch.setattr(routes, "_run_inline", fake_inline)
 
     response = await client.post(
         "/api/v1/trips",
@@ -132,6 +144,8 @@ async def test_valid_request_is_accepted_and_queued(client, monkeypatch):
     assert body["trip_id"].startswith("trip_")
     assert body["status"] == "queued"
     assert body["stream_url"].endswith("/stream")
+    # The Kafka-unavailable fallback still handed the job somewhere.
+    assert ran == [body["trip_id"]]
 
 
 @pytest.mark.asyncio

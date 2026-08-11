@@ -29,6 +29,12 @@ COPY .streamlit/ ./.streamlit/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 COPY full_iata_codes.csv Station_Name_8477.xlsx ./
+# The supplements that fill the gaps in those two datasets — Kerala's stations,
+# Madgaon, Jaipur's airport. Omitting them does not fail the build: geo.py
+# degrades quietly, so Docker would just answer "no railway station in the
+# dataset for Kochi" while the same query worked locally. The `alembic/`
+# directory was missed the same way once already.
+COPY data/ ./data/
 
 RUN mkdir -p /app/data/checkpoints \
     && useradd --create-home --uid 1000 appuser \
