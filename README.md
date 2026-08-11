@@ -70,8 +70,6 @@ Putting the LangGraph checkpointer in that same Postgres is what makes `--scale 
 
 ### The graph
 
-![LangGraph Architecture](graph.png)
-
 ```mermaid
 flowchart TD
     A[extract_brief] --> B[plan_transport_strategy]
