@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from datetime import date, timedelta
 from typing import Any, Iterable, Optional
@@ -424,7 +425,17 @@ def backend_online() -> tuple[bool, dict]:
 # ---------------------------------------------------------------------------
 
 def _flight_card(item: dict, best: bool) -> str:
-    price = money(item.get("price_inr"))
+    # Google and Amadeus both quote the WHOLE party. This card said "per person"
+    # under that number, so a two-traveller Shimla→Mumbai search displayed
+    # "₹16,302 per person" for a ₹16,302 total — the same double-count the
+    # recommendation prompt had, one layer further out.
+    total = item.get("price_total_inr") or item.get("price_inr")
+    party = int(item.get("party_size") or 1)
+    price = money(total)
+    per_head = money(
+        item.get("price_per_person_inr")
+        or ((total / party) if total and party else None)
+    )
     carriers = ", ".join(item.get("carriers") or []) or "Flight"
     stops = item.get("stops")
     stop_text = "non-stop" if stops == 0 else (item.get("layover_pretty") or f"{stops} stop(s)")
@@ -439,7 +450,9 @@ def _flight_card(item: dict, best: bool) -> str:
 
     right = (
         f'<div><div class="tp-price">{price}</div>'
-        '<div class="tp-price-sub">per person</div></div>'
+        f'<div class="tp-price-sub">'
+        + (f"total for {party} · {per_head} pp" if party > 1 else "total")
+        + "</div></div>"
         if price else '<div class="tp-price-sub">price unavailable</div>'
     )
 
@@ -514,6 +527,108 @@ MODE_SPEC = {
 }
 
 
+#: Machine-readable tails the prompts ask for so the graph can parse a number
+#: out of prose. They are plumbing, and were being shown to the traveller —
+#: "ARRIVAL_DATE: 2026-08-25 ARRIVAL_TIME: 20:25 TRANSPORT_COST_INR: 18272" sat
+#: under the recommendation, and "ESTIMATED_ONGROUND_BUDGET_INR: 6500" under the
+#: itinerary.
+_SENTINELS = (
+    "ARRIVAL_DATE", "ARRIVAL_TIME", "TRANSPORT_COST_INR",
+    "ESTIMATED_ONGROUND_BUDGET_INR",
+)
+_SENTINEL_LINE_RE = re.compile(
+    r"^[^\S\n]*(?:\*\*|_)?(?:" + "|".join(_SENTINELS) + r")\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+#: The model often runs the whole tail together on one line, so once the first
+#: sentinel appears everything after it is plumbing too.
+_SENTINEL_TAIL_RE = re.compile(
+    r"\n[^\S\n]*(?:\*\*|_)?(?:" + "|".join(_SENTINELS) + r")\b.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_sentinels(text: str) -> str:
+    cleaned = _SENTINEL_TAIL_RE.sub("", text or "")
+    cleaned = _SENTINEL_LINE_RE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _render_rationale(trip: dict) -> None:
+    """Show the working behind the recommendation.
+
+    Kept collapsed by default — a traveller wants the answer, but anyone who
+    doubts it (including the person who built it) can open the drawer and see
+    every option scored, what was skipped and why, and whether the model's prose
+    matches the arithmetic.
+    """
+    rationale = trip.get("decision_rationale") or {}
+    considered = rationale.get("considered") or []
+    if not considered:
+        return
+
+    agreement = rationale.get("model_agreement") or {}
+    label = "Why this recommendation?"
+    if agreement.get("checked") and not agreement.get("agrees"):
+        label += "  ⚠️ the written pick differs from the highest-scoring option"
+
+    with st.expander(label, expanded=False):
+        weights = rationale.get("weights") or {}
+        st.caption(
+            f"Budget level **{esc(rationale.get('budget_level'))}** → weights: "
+            + ", ".join(f"{k} {v:.0%}" for k, v in weights.items())
+            + ". Lower score is better; cost and time are normalised across "
+            "the options because rupees and minutes are not directly comparable."
+        )
+
+        st.dataframe(
+            [
+                {
+                    "Option": c["label"],
+                    "Mode": c["mode"],
+                    "Total": money(c["total_inr"]) or "—",
+                    "Door-to-door": (
+                        f"{c['total_minutes'] // 60}h {c['total_minutes'] % 60:02d}m"
+                        if c.get("total_minutes") else "—"
+                    ),
+                    "Score": c["score"] if c.get("score") is not None else "—",
+                    "Estimated price": "yes" if c.get("price_is_estimate") else "",
+                    "Self-transfer": "yes" if c.get("self_transfer") else "",
+                }
+                for c in considered
+            ],
+            hide_index=True, width="stretch",
+        )
+
+        if agreement.get("checked"):
+            if agreement.get("agrees"):
+                st.caption(
+                    f"✅ The written recommendation matches the top-scoring "
+                    f"option (**{esc(agreement.get('best_by_score'))}**)."
+                )
+            else:
+                st.warning(
+                    f"The prose recommends **{esc(agreement.get('model_appears_to_pick'))}** "
+                    f"but **{esc(agreement.get('best_by_score'))}** scores best"
+                    + (f" — a difference of {money(abs(agreement['cost_gap_inr']))}"
+                       if agreement.get("cost_gap_inr") else "")
+                    + f". {agreement.get('note', '')}"
+                )
+
+        skipped = rationale.get("skipped_modes") or {}
+        no_service = rationale.get("modes_with_no_service") or []
+        if skipped:
+            st.caption("**Not searched:** " + "; ".join(
+                f"{k} — {v}" for k, v in skipped.items()))
+        if no_service:
+            st.caption("**Searched, nothing available:** " + ", ".join(no_service))
+        if rationale.get("summary_source") == "composed_from_data":
+            st.caption(
+                "⚠️ The summary was composed directly from the data — the "
+                "language model was unavailable."
+            )
+
+
 def render_transport(trip: dict) -> None:
     strategy = trip.get("transport_strategy") or {}
     if strategy.get("modes"):
@@ -522,21 +637,98 @@ def render_transport(trip: dict) -> None:
         )
 
     health = trip.get("provider_health") or {}
-    failed = {k: v for k, v in health.items() if v != "ok"}
+    # A mode we chose not to search is not an outage — showing it as one trained
+    # the eye to ignore the warning that does matter.
+    skipped = {k: v for k, v in health.items() if str(v).startswith("not searched")}
+    failed = {k: v for k, v in health.items() if v != "ok" and k not in skipped}
     if failed:
         st.warning(
             "Some providers were unavailable: "
             + "; ".join(f"**{k}** ({v})" for k, v in failed.items())
         )
+    if skipped:
+        st.caption(
+            "Not searched: "
+            + "; ".join(
+                f"**{k}** — {str(v).removeprefix('not searched: ')}"
+                for k, v in skipped.items()
+            )
+        )
+
+    # Shown before the recommendation: if the trip needs a surface leg to reach
+    # an airport in another city, that is the first thing the traveller has to
+    # know, not a footnote inside the LLM's prose.
+    legs = [leg for leg in (trip.get("connecting_legs") or []) if not leg.get("trivial")]
+    if legs:
+        st.markdown(
+            '<div class="tp-sec">Connecting legs — part of your journey</div>',
+            unsafe_allow_html=True,
+        )
+        for leg in legs:
+            distance = leg.get("distance_km")
+            bits = [f"**{esc(leg.get('from'))} → {esc(leg.get('to'))}**"]
+            if distance:
+                bits.append(f"~{distance:.0f} km")
+            bits.append(f"needed to reach the {esc(leg.get('for_mode'))}")
+            if leg.get("implausible"):
+                st.markdown("- " + " · ".join(bits) + " — ⚠️ **not a realistic transfer**")
+                st.caption(esc(leg.get("note")))
+                continue
+            cab = leg.get("cab") or {}
+            if cab.get("fare_inr"):
+                bits.append(f"road ~₹{cab['fare_inr']:,.0f} for the group (estimate)")
+            if leg.get("trains"):
+                bits.append(f"{len(leg['trains'])} train(s) also run this leg")
+            st.markdown("- " + " · ".join(bits))
+            if leg.get("note"):
+                st.caption(f"⚠️ {leg['note']}")
 
     if trip.get("transport_summary"):
         st.markdown('<div class="tp-sec">Recommendation</div>', unsafe_allow_html=True)
-        st.markdown(trip["transport_summary"])
+        st.markdown(_strip_sentinels(trip["transport_summary"]))
     else:
         st.markdown(
             '<div class="tp-note">No transport summary yet.</div>',
             unsafe_allow_html=True,
         )
+
+    # The journey home. Shown as its own section because it is a separate
+    # booking with a separate cost, and because nothing planned it at all before.
+    return_flights = ((trip.get("return_options") or {}).get("flight") or {})
+    if return_flights.get("flights"):
+        brief = trip.get("brief") or {}
+        st.markdown(
+            '<div class="tp-sec">Return journey</div>', unsafe_allow_html=True
+        )
+        st.caption(
+            f"{esc(brief.get('destination'))} → {esc(brief.get('origin'))} on "
+            f"{esc(return_flights.get('departure_date'))} · cheapest "
+            f"{money(return_flights.get('cheapest_total_inr'))} for "
+            f"{return_flights.get('party_size', 1)}"
+        )
+        best = return_flights["flights"][0]
+        st.markdown(_flight_card(best, best=False), unsafe_allow_html=True)
+
+    flex = trip.get("date_flexibility") or {}
+    if flex.get("available"):
+        st.markdown('<div class="tp-sec">Date flexibility</div>',
+                    unsafe_allow_html=True)
+        if flex.get("worth_moving"):
+            st.success(flex["advice"])
+        else:
+            st.caption(flex.get("advice", ""))
+        prices = flex.get("prices_by_date") or {}
+        if prices:
+            st.dataframe(
+                [{"Date": d,
+                  "Cheapest fare": money(p),
+                  "": ("cheapest" if d == flex.get("cheapest_date") else
+                       "your date" if d == flex.get("requested_date") else "")}
+                 for d, p in prices.items()],
+                hide_index=True, width="stretch",
+            )
+
+    _render_rationale(trip)
 
     options = trip.get("transport_options") or {}
     if not options:
@@ -711,7 +903,8 @@ def render_budget(budget: dict) -> None:
     per_person = money(budget.get("per_person_inr"))
     st.markdown(
         '<div class="tp-stats">'
-        + _stat("Transport", money(budget.get("transport_inr")) or "—")
+        + _stat("Transport out", money(budget.get("transport_inr")) or "—")
+        + _stat("Transport back", money(budget.get("return_transport_inr")) or "—")
         + _stat("Accommodation", money(budget.get("hotel_inr")) or "—")
         + _stat("On-ground", money(budget.get("onground_inr")) or "—")
         + _stat(
@@ -1064,7 +1257,13 @@ meta_bits = [f"{esc(brief.get('duration'))} days", f"{esc(brief.get('persons'))}
 if brief.get("start_date"):
     meta_bits.insert(0, esc(brief["start_date"]))
 if trip.get("arrival_time"):
-    meta_bits.append(f"arrives {esc(trip['arrival_time'])}")
+    # Spell out the date whenever the journey does not land on the day it left,
+    # so an overnight trip cannot look like a same-day one.
+    arrival_date = trip.get("arrival_date")
+    if arrival_date and arrival_date != brief.get("start_date"):
+        meta_bits.append(f"arrives {esc(arrival_date)} {esc(trip['arrival_time'])}")
+    else:
+        meta_bits.append(f"arrives {esc(trip['arrival_time'])}")
 
 right_block = ""
 if total:
@@ -1117,7 +1316,7 @@ with plan_tab:
         # content arrives and the styling never applies. Blank lines around the
         # itinerary keep the inner markdown parsed as markdown.
         st.markdown(
-            f'<div class="tp-itin">\n\n{trip["itinerary"]}\n\n</div>',
+            f'<div class="tp-itin">\n\n{_strip_sentinels(trip["itinerary"])}\n\n</div>',
             unsafe_allow_html=True,
         )
 

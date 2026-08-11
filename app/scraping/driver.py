@@ -21,6 +21,7 @@ import contextlib
 import logging
 import shutil
 import tempfile
+import threading
 from typing import Any, Iterator, Optional
 
 from app.config import settings
@@ -54,6 +55,17 @@ def _chrome_options() -> Any:
     return options
 
 
+#: Cap on browsers alive at once. Each scrape is a real Chrome process, and the
+#: fan-out grew from "one train + one bus" to also cover connecting legs and the
+#: return journey — four to six concurrent sessions. A standalone Selenium
+#: container serves a fixed number of sessions and simply queues or rejects the
+#: rest, and on a laptop the memory cost is the limit. Bounding it here means
+#: pressure shows up as waiting rather than as crashes.
+_SESSION_LIMIT = threading.BoundedSemaphore(
+    max(1, settings.scraper_max_sessions)
+)
+
+
 @contextlib.contextmanager
 def browser(timeout: Optional[int] = None) -> Iterator[Any]:
     """Yield a configured WebDriver and *always* tear it down."""
@@ -63,6 +75,14 @@ def browser(timeout: Optional[int] = None) -> Iterator[Any]:
     from selenium import webdriver
 
     timeout = timeout or settings.scraper_timeout_seconds
+
+    # Runs in a worker thread (providers call this via asyncio.to_thread), so a
+    # blocking acquire here parks that thread, not the event loop.
+    if not _SESSION_LIMIT.acquire(timeout=settings.scraper_queue_seconds):
+        raise ScraperUnavailable(
+            f"no browser slot free after {settings.scraper_queue_seconds}s "
+            f"({settings.scraper_max_sessions} in use)"
+        )
     profile_dir = tempfile.mkdtemp(prefix="tp-chrome-")
     options = _chrome_options()
     options.add_argument(f"--user-data-dir={profile_dir}")
@@ -87,6 +107,7 @@ def browser(timeout: Optional[int] = None) -> Iterator[Any]:
             with contextlib.suppress(Exception):
                 driver.quit()
         shutil.rmtree(profile_dir, ignore_errors=True)
+        _SESSION_LIMIT.release()
 
 
 def find_first(driver: Any, selectors: list[tuple[str, str]], timeout: int = 10) -> Any:

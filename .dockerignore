@@ -13,6 +13,11 @@ __pycache__/
 .env.*
 !.env.example
 data/
+# …but the reference tables in it are build inputs, not local state. They fill
+# real gaps in the bundled datasets (Kerala's railway stations, Madgaon,
+# Jaipur's airport) and geo.py degrades silently without them, so leaving them
+# out makes Docker quietly worse than a local run rather than failing loudly.
+!data/*.csv
 *.sqlite
 *.sqlite3
 

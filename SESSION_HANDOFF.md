@@ -5,7 +5,8 @@
 >
 > **Sessions:** 2026-08-08 (rebuild) · 2026-08-09 (persistence, Kafka, Supabase,
 > Docker, caching, cleanup) · 2026-08-09 later (weather + hotel keys,
-> Supabase-everywhere, real-browser verification)
+> Supabase-everywhere, real-browser verification) · **2026-08-11 (multi-leg
+> journeys — see §14)**
 >
 > **Read this file first**, then `README.md` (which holds the 45-issue audit of
 > the original code).
@@ -31,6 +32,12 @@ by actually running it.** Nothing is left in an unknown state.
 | Tests | ✅ **119 passing**, pyflakes clean, `pip check` clean |
 
 **Only genuinely outstanding item:** rotate the exposed credentials (§10).
+
+> ⚠️ **Superseded on 2026-08-11.** A routing audit found six real bugs that this
+> table did not cover — the planner could not express a multi-leg journey and
+> silently substituted a distant airport instead of saying so. All six are now
+> fixed and verified live; **§14 is the current record.** Tests: **159
+> collected, 152 pass, 7 skip**.
 
 **Session 4 changes:**
 - `WEATHER_API_KEY` and `SERPAPI_KEY` are now **set and verified live**. Weather
@@ -499,3 +506,315 @@ Nothing is blocking. In rough priority order:
   expect a plain, complete answer.
 - They say "do everything" when they want autonomy — proceed without stopping to
   ask, and report at the end.
+
+---
+
+## 14. Session 5 (2026-08-11) — multi-leg journeys
+
+**The question that started it:** "no direct flight exists between Aligarh and
+Mumbai, then he needs to do a multi-part journey — does the code handle that?"
+
+**It did not**, and the way it failed was worse than not answering: it produced
+a confident wrong answer. Asked for **Shimla → Mumbai** it replied
+*"FLIGHT IXC → BOM dep 13:55, ₹32,604"*. IXC is Chandigarh, a 113 km drive from
+Shimla. The traveller was sent to an airport in another state with no plan and
+no budget for reaching it — and the price was double.
+
+### What was wrong (all found by running the real providers)
+
+| # | Bug | Evidence |
+|---|---|---|
+| 1 | **Silent origin substitution.** `geo.resolve_airport` LLM-picks a nearby airport; `origin_airport_city` and `exact` were stored on the brief and **read by nothing**. | Aligarh→AGR (85 km), Shimla→IXC (113 km), Gangtok→IXB (125 km), Munnar→COK (130 km) |
+| 2 | **Flight prices double-counted.** `price_inr` is already the group total; the prompt asked for a group total, so the LLM multiplied again. | DEL→BOM: ₹6,074 / ₹12,148 / ₹18,222 for 1/2/3 adults — exact multiples. Shimla→Mumbai 2 pax reported ₹32,604 against a true ₹16,302 |
+| 3 | **`arrival_date` never updated** from the chosen transport — pinned to `start_date` at `nodes.py:99`. | 24 h 30 m Aligarh→Mumbai train: itinerary told "arrive Aug 25", truth Aug 26. Hotel booked a night nobody sleeps in |
+| 4 | **Journey time dropped before the comparison.** The scraper captures `duration: "24:30H"`; the TRAIN fact line omitted it. | LLM saw `dep 15:45 arr 16:15` — a 24.5-hour train reading as 30 minutes |
+| 5 | **Thin routes crashed the parser and reported as healthy.** | AGR→BOM `'NoneType' object is not subscriptable`, KUU→BOM `list index out of range`, both inside `fast_flights/parser.py`; retried 3× though deterministic; `provider_health` said `"ok"` |
+| 6 | **Kolkata's rail terminus was never tried.** Top matches were Sealdah and Kolkata station; Howrah is filed under its own district. | Kolkata→Delhi found **0** trains; now finds **10** from HWH |
+
+### What was built
+
+- **`app/providers/journey.py`** — models the journey as `access → main → egress`
+  legs. Resolves the gateway city, prices the surface hop with the existing cab
+  and train providers, and feeds it into the recommendation, the budget and the
+  itinerary. Legs run concurrently under a bounded budget (`LEG_TIMEOUT` 45 s,
+  `ALL_LEGS_TIMEOUT` 75 s) because they run *after* the main fan-out and land
+  directly on the user's wait. A leg that cannot be priced is still shown —
+  an unpriced leg beats an invisible one.
+- **`geo.resolve_railhead`** — mirrors `resolve_airport` for cities with no
+  railway at all (Gangtok → New Jalpaiguri). `search_transport` now queries the
+  railhead, so "not in the dataset" is no longer the only possible answer.
+- **`_CITY_EXTRA_STATION_CITIES`** — deliberately short (Kolkata→Howrah,
+  Hyderabad→Secunderabad, Delhi→Nizamuddin, Kochi→Ernakulam). Padding it
+  dilutes the NSG category ranking and pushes a city's own terminals down.
+- **Explicit price semantics** — `price_total_inr` / `price_per_person_inr` /
+  `party_size` on both flight providers, and a prompt that says which is which.
+- **`parse_duration_minutes` / `derive_arrival`** — duration is authoritative;
+  the "arrival clock < departure clock ⇒ +1 day" heuristic silently truncates
+  anything over 24 hours, which is exactly the case that exposed this.
+- **Honest absences** — `no_inventory` vs `degraded` on the flight router, a
+  one-way retry when a route has no *round-trip* inventory, `NO_OPTIONS <MODE>`
+  lines in the prompt, and a per-mode breakdown when nothing at all is bookable.
+
+### Verified live, after
+
+| Route | Result |
+|---|---|
+| **Shimla → Mumbai** | Two numbered legs, "Shimla has no airport" stated, **₹18,272** (₹16,302 flight + ₹1,970 road) — was ₹32,604 with the road leg invisible |
+| **Aligarh → Mumbai** | Train 14314, journey **24h 30m** shown, **arrives 2026-08-26**, check-in moved to the 26th with the reason given, itinerary 5 days not 6, Day 1 starts in the evening |
+| **Gangtok → Kochi** | *"No bookable transport"* with a reason per mode — no longer invents a Bagdogra flight from the leg fact alone |
+| **Kolkata → Delhi** | **10 trains** from Howrah (was 0) |
+| **Delhi → Goa / Port Blair** | Unchanged, correct, ₹27,626 / ₹61,524 for 2 |
+| **AGR→BOM, KUU→BOM** | 1.2 s and *"No airline flies AGR→BOM"* — was 3 retries and "search unavailable" |
+| **Full graph** | Shimla→Mumbai through both `interrupt()`s to `finalise`: total ₹42,363 (₹21,181.50 pp), **0 errors** |
+
+**Tests: 159 collected — 152 pass, 7 skip** (was 119 collected: 112 pass,
+7 skip) — `tests/test_multi_leg.py` adds 40 covering
+duration parsing, overnight arrival, leg planning, price labelling, the gateway
+note, railhead substitution and the hallucination guard. pyflakes and
+`pip check` clean.
+
+### Round 2 — "does it try everything?"
+
+Follow-up question: *"Suppose I want to travel from Aligarh to Patiala — does it
+try everything?"* It did not. The run searched **bus and train only**; the
+strategy LLM had dropped flight *and* cab before any data existed, and the
+summary then stated *"no flights are available"* — a claim about AGR→IXC that
+nothing had checked. That is the original "commit to a mode before seeing data"
+bug, surviving in a smaller form inside its own replacement.
+
+**Fixed by making the filter deterministic.** `plan_transport_strategy` now
+takes the road distance (one hard-cached lookup, shared with the cab provider)
+and applies written rules — `MIN_FLIGHT_KM` 250, `MAX_CAB_KM` 900,
+`MAX_BUS_KM` 1500, `MIN_INTERCITY_KM` 20. The LLM can no longer veto a mode; the
+traveller's own words (`"I'd rather fly"`) override every rule; and anything
+skipped is recorded in `strategy["skipped"]` with a reason that reaches
+`provider_health`, the prompt (`NOT_SEARCHED <MODE>`) and the UI. **"We did not
+look" and "there is nothing" are now different sentences.**
+
+Aligarh→Patiala after: **540 km, all four modes searched, nothing skipped.**
+AGR→IXC was actually checked (genuinely no service), and the cab option the old
+filter had discarded surfaced as the runner-up at **₹7,520** — an alternative
+the traveller previously never saw.
+
+The same sweep then caught a bug the first round had introduced: **Delhi → Port
+Blair quoted ₹18,310 to drive Kolkata → Port Blair**, 1,370 km across the Bay of
+Bengal, because the railhead resolver offered Kolkata for an island. A leg past
+`MAX_SENSIBLE_LEG_KM` (400 km) is now marked `implausible`, has its fare
+**deleted rather than shown**, emits `UNUSABLE_GATEWAY` instead of
+`CONNECTING_LEG`, and contributes nothing to the total. A fare there is worse
+than no fare — it invents a road.
+
+**Tests now 159 collected — 152 pass, 7 skip.**
+
+### Round 3 — the layers I had changed but never run
+
+The API schema and the Streamlit UI had been edited and only reasoned about.
+Running them found three more bugs, all invisible from the graph layer:
+
+- **The flight card said "per person" under a group total.** `_flight_card`
+  hard-coded the label while displaying `price_inr`, so a two-traveller
+  Shimla→Mumbai search rendered "₹16,302 per person" for a ₹16,302 *total* —
+  the same double-count as the prompt, one layer further out. Now reads
+  "₹16,302 · total for 2 · ₹8,151 pp".
+- **Machine-readable sentinels were shown to the traveller.**
+  `ARRIVAL_DATE: … ARRIVAL_TIME: … TRANSPORT_COST_INR: 18272` sat under the
+  recommendation and `ESTIMATED_ONGROUND_BUDGET_INR: 6500` under the itinerary.
+  `_strip_sentinels` removes both, including the run-together one-line form.
+- **The strategy caption repeated the skip list** already rendered beneath it.
+
+**Verified in a real Chrome browser** against the API on `:8077` (Supabase
+checkpointer, Redis and Kafka down so it degraded to in-process cache and inline
+execution) and Streamlit on `:8511`: form submit → transport review, showing
+"Connecting legs — part of your journey · Shimla → Chandigarh ~113 km · road
+~₹1,970", "Not searched: cab … bus …" as a caption rather than an outage
+warning, and the corrected fare labels. HTTP path separately driven end to end:
+`POST /api/v1/trips` (200, 33 s) → two `resume` calls → `completed`, total
+₹32,855, `connecting_legs` and `arrival_date` present in the JSON, zero errors.
+
+### Still open
+
+- The station dataset has **almost no Kerala coverage** (only "Kozhikkode"), so
+  Kochi/Munnar rail is unavailable. Reported honestly as a dataset gap, not as
+  "no trains exist".
+- **AbhiBus discovery can exceed the 120 s fan-out budget** on some routes
+  (seen on Delhi→Agra). Pre-existing; the bus result is dropped and reported as
+  a timeout rather than silently missing.
+- No **connection-time validation** — the plan states a connecting leg is
+  needed but does not verify the road hop actually lands before the flight
+  departs. That is the natural next step.
+- Multi-leg is modelled for **access/egress to a gateway**, not for arbitrary
+  hub-to-hub routing (e.g. IXB→CCU→COK when no direct flight exists).
+
+---
+
+## 15. Session 6 (2026-08-11) — "fix everything"
+
+Brief: *"Fix out everything… there must not be anything remaining to fix… think
+like a real user, add some more functionality."* Every item §14 left open is
+closed, plus a set of bugs found only by running the parts that had never been
+run.
+
+### New functionality
+
+| Feature | Why a real traveller needs it |
+|---|---|
+| **Train fare estimates** (`trains.estimate_fares`) | etrain lists no fares, so any train recommendation left `budget.transport_inr` **empty** and the trip total silently dropped its largest line. Distance-based IR slabs for SL/3A/2A/1A with a long-distance taper; measured within ~5% of real IRCTC fares on Delhi–Kolkata and Chennai–Delhi. Aligarh→Mumbai went from `None` to ₹1,340. |
+| **Connection-time validation** (`journey.check_connection`) | The plan named a road leg but never checked it landed before departure. Now every option carries *"leave Shimla by 07:55"*, night departures are flagged, and unmakeable ones are refused with the date you'd have to travel instead. Uses the LLM's **driving time**, which was being requested and thrown away — 113 km of hill road is 4 hours, not 2. |
+| **Return journey** | Nothing ever planned the way home. Return flights are searched on `end_date` and carried as their own budget line. |
+| **Hub routing** (`flights_router._search_via_hub`) | When no direct service exists, connect through DEL/BOM/BLR/HYD/MAA/CCU. Gangtok→Kochi went from *"no bookable transport"* to **IXB→DEL→COK, 9h20m, ₹41,162**, explicitly marked `self_transfer` — two bookings, your risk. |
+| **Graceful degradation without the LLM** | Groq's free tier hit its 100k daily token cap mid-run. `recommend_transport` returned only errors; `build_itinerary` returned a **blank plan while the trip reported "completed"**. Both now compose from the structured data already in hand — real fares, real timings, real dates — and record `degraded` in `provider_health`. |
+| **Deterministic gateway table** (`geo._GATEWAYS`) | 40+ well-known Indian destinations → the airport and railhead people actually use. Removes the LLM from the common path entirely: a quota outage had been turning Gangtok into a city with apparently no air service, deleting its flights, legs and budget. |
+
+### Bugs found by running it
+
+- **`fast_flights` reads alliance metadata before the flights.** A route flown
+  only by non-alliance carriers raised `IndexError` and we reported
+  **"No airline flies DEL→COK"** — a route with dozens of daily departures.
+  Now parsed directly from `payload[3][0]` with metadata optional; "no
+  inventory" is claimed only after reading an empty flight slot.
+- **Wrong IATA codes in the bundled dataset.** Coimbatore was `CIB` (Council
+  Bluffs, **Iowa**) and Kozhikode `CCI` (Concordia, **Kansas**); Pune and
+  Bhuntar were missing entirely.
+- **The return leg was double-counted.** The outbound search asked for a
+  round-trip fare *and* a separate return was added: Shimla→Mumbai read
+  ₹34,656 against a true ₹16,302 + ₹1,970. Outbound is now priced one-way
+  whenever a return is searched separately.
+- **AbhiBus parsed every card on the page.** Each `element.text` is a browser
+  round trip and a busy corridor lists 100+ services, so Delhi→Agra blew its
+  85-second budget and lost the result. Capped at 40; **85 s timeout → 29 s
+  with 10 real buses**. Discovery is separately bounded at 45 s.
+- **`ProviderError: unknown failure`** — `str(asyncio.TimeoutError())` is the
+  empty string, so the one failure whose cause we always know reported as the
+  one we don't. Now `"timed out after 85s"`.
+- **The Dockerfile did not copy `data/`** and `.dockerignore` excluded it, so
+  the new station and airport supplements vanished in containers — Kerala rail
+  and Jaipur's airport would have worked locally and silently failed in Docker.
+  Exactly the `alembic/` bug from session 3, repeated.
+- **The test suite made live network calls.** With `KAFKA_ENABLED=false` the API
+  degrades to an in-process background task, so `POST /api/v1/trips` launched
+  real Chrome, scraped live sites and called a paid LLM — one test took **122
+  seconds**. Suite now **8 s** and touches nothing external.
+- **The suite also read the developer's Redis**, so a geo test passed alone and
+  failed in the suite once the Docker stack was up. `conftest` now points the
+  cache at a dead address.
+- Selenium had **no concurrency bound** while the fan-out grew to 4-6 browsers;
+  `scraper_max_sessions` (default 4) now makes pressure show as waiting.
+
+### Verified
+
+**176 tests pass, 7 skip** (from 119 at the start of the day), stable across
+repeated runs. pyflakes and `pip check` clean.
+
+**Full Docker stack** — 7 services healthy, Kafka `ok`, Supabase checkpointer,
+remote Selenium confirmed creating and cleanly quitting sessions. Trips
+submitted over HTTP, consumed by the **Kafka worker** (not the inline
+fallback), driven through both `interrupt()`s to `completed`:
+
+| Route | Result |
+|---|---|
+| Shimla → Mumbai | leg Shimla→Chandigarh 4h ₹1,970 · out ₹18,272 · back ₹19,590 · total ₹60,537 · **0 errors** |
+| Gangtok → Kochi | hub IXB→DEL→COK ₹41,162 · leg 4h ₹2,120 · back ₹27,678 · total ₹77,660 |
+| Shimla → Goa | out ₹17,654 · back ₹19,936 · itinerary degraded to a dated skeleton when the quota ran out, and said so |
+
+### Still open — honestly
+
+- **Rotate the exposed credentials (§10).** Unchanged and unconfirmed; this
+  needs the account owner, not the codebase.
+- **Groq free tier is 100,000 tokens/day** and a handful of full trips exhausts
+  it. Degradation is now graceful, but a real deployment needs a paid tier.
+- Hub routing is **same-day, one stop, two hubs**. It does not search multi-day
+  or two-stop itineraries.
+- Train fares are **estimates**, not IRCTC quotes; there is no seat-availability
+  or booking path.
+- `full_iata_codes.csv` holds ~100 airports and had three errors in the ones
+  checked. The supplement fixes those found; the rest is unaudited.
+
+---
+
+## 16. Session 6b — features built to be *defensible*, not just present
+
+Brief: *"add functionality to impress the interviewer… think out of the box."*
+Rather than more travel features, these were chosen around one theme that the
+day's debugging had already established: **this system lied in ways nobody could
+see, so make it prove itself.** Each has a story attached to a real bug.
+
+### 1. Deterministic scorer + LLM-disagreement audit — `app/core/decision.py`
+
+The model, over one day of running, multiplied a group fare twice, read a
+24 h 30 m train as a 30-minute hop, recommended an airport in another state
+without mentioning the drive, and asserted "no flights available" for a route
+nothing had searched. **Every one is an arithmetic or bookkeeping error, not a
+language error.** So the split is now explicit:
+
+> the numbers are computed in `decision.py`; the model explains the choice.
+
+Each option carries a real group cost and real door-to-door time (connecting
+legs and check-in buffers folded in), plus penalties for self-transfer, night
+starts, overnight arrivals and estimated prices. Cost and time are **normalised
+across the candidate set** rather than converted through a made-up
+rupees-per-minute rate. Weights come from the traveller's budget level.
+
+Then `compare_with_model` checks whether the prose actually picked the
+top-scoring option, and records the gap when it did not. Not a correctness
+check — the model may be weighing something real — an **audit**.
+
+*Live demo worth showing:* Delhi→Goa at `budget_level=low` ranks the **₹5,700
+bus above the ₹14,846 flight**; at `high` the flight wins. Same data, different
+traveller, and the reasoning is visible.
+
+### 2. Decision provenance — `GET /api/v1/trips/{id}/rationale`
+
+Every recommendation now ships its own working: each option scored, the weights
+applied, which modes were skipped **and why**, which prices are estimates rather
+than quotes, and whether the model agreed with the maths. Rendered in the UI as
+a collapsed "Why this recommendation?" drawer that flags disagreement in the
+title.
+
+### 3. Chaos injection — `app/core/chaos.py`
+
+The project claims Redis, Kafka and every scraper can fail without taking the
+trip down. That was never tested — it was tested *by accident* when Groq's daily
+cap ran out. Now:
+
+    CHAOS_PROVIDERS=etrain,abhibus CHAOS_MODE=error|timeout|empty
+
+Injected at the single `@resilient` chokepoint, so no provider knows it exists.
+It refuses to arm when `APP_ENV=production`. `empty` mode simulates the
+**dangerous** failure — a provider that succeeds and returns nothing.
+
+*Verified live:* both scrapers killed, flights still returned 4 options, both
+failures reported honestly in `provider_health`.
+
+### 4. Flexible dates — `app/providers/flex_dates.py`
+
+Fares move a long way over 48 hours and the planner had no way to say so.
+Bounded, cached fan-out across ±3 days; **~2.7 s for 7 dates**. Savings under
+₹500 are not advertised — nobody rearranges a trip for that.
+
+*Live:* Delhi→Goa found ₹13,516 on the 24th against ₹14,846 on the 25th.
+
+### 5. Provider contract tests — `tests/test_provider_contracts.py`
+
+The `fast_flights` break produced a **silent wrong answer**, and no mock would
+have caught it because a mock keeps its original shape forever. So real payloads
+are recorded by `scripts/record_fixtures.py` and replayed through the real
+parser. Three cases deliberately: flights **with** metadata, flights **without**
+it (the case that broke), and a route with genuinely no service — because
+"nothing flies here" and "we could not read the answer" must never collapse into
+the same output.
+
+### Verified
+
+**205 tests pass, 8 skip** (from 176). pyflakes, `pip check` clean. 15
+endpoints. Full Docker stack rebuilt and driven through the browser: return
+journey, date-flexibility table and the rationale drawer all render, with
+*"✅ The written recommendation matches the top-scoring option"*.
+
+### Honest limits
+
+- The scorer's weights and penalty constants are **judgement, not measurement**.
+  They are defensible and documented, not tuned against outcome data.
+- `compare_with_model` matches the model's pick by substring. Good enough to
+  flag disagreement; it is a smoke alarm, not a parser.
+- Fixtures capture Google Flights only. The Selenium scrapers have no recorded
+  contract — their HTML is too large to store usefully.

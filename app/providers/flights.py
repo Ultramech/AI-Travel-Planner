@@ -170,6 +170,9 @@ async def search_flights(
 
         carriers = sorted({s.get("carrierCode", "") for s in segments if s.get("carrierCode")})
 
+        _party = max(1, int(adults or 1))
+        _total = float(offer.get("price", {}).get("total", 0) or 0)
+
         results.append(
             {
                 "route": f"{origin_code} → {dest_code}",
@@ -180,7 +183,13 @@ async def search_flights(
                 "arrival_time": dep_dt and _parse_iso(arrival)
                 and _parse_iso(arrival).strftime("%H:%M"),
                 "duration": outbound.get("duration", "").replace("PT", "").lower(),
-                "price_inr": float(offer.get("price", {}).get("total", 0) or 0),
+                # Amadeus ``price.total`` covers the whole party, exactly like
+                # Google's. Named explicitly so nothing downstream multiplies it
+                # by the traveller count a second time.
+                "price_inr": _total,
+                "price_total_inr": _total,
+                "price_per_person_inr": round(_total / _party, 2) if _total else None,
+                "party_size": _party,
                 "currency": offer.get("price", {}).get("currency", currency),
                 "stops": len(segments) - 1,
                 "layover_minutes": layover_minutes,
@@ -203,9 +212,14 @@ async def search_flights(
         "departure_date": departure_date,
         "return_date": return_date,
         "adults": adults,
+        "party_size": max(1, int(adults or 1)),
         "count": len(results),
         "flights": results,
         "cheapest_inr": results[0]["price_inr"] if results else None,
+        "cheapest_total_inr": results[0]["price_total_inr"] if results else None,
+        "cheapest_per_person_inr": (
+            results[0]["price_per_person_inr"] if results else None
+        ),
     }
 
 

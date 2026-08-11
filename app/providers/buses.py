@@ -182,11 +182,29 @@ def _discover_route(origin: str, destination: str) -> Optional[dict[str, str]]:
         }
 
 
+#: Discovery drives the homepage autocomplete — two typed fields, each polling
+#: a React dropdown for up to 15 s, then a 25 s wait for the search redirect. On
+#: a route AbhiBus does not serve, every one of those waits runs to the end and
+#: the whole call could exceed the 120 s fan-out budget, taking the bus result
+#: with it (seen live on Delhi→Agra). Discovery gets its own, smaller budget so
+#: a slow lookup costs the bus result at worst, never the whole search.
+DISCOVERY_TIMEOUT = 45.0
+
+
 @cached("buses:route_ids", ttl=settings.ttl_iata)
 async def resolve_route(origin: str, destination: str) -> Optional[dict[str, str]]:
     """Cached city-id lookup for an AbhiBus route (ids are permanent)."""
     try:
-        return await asyncio.to_thread(_discover_route, origin, destination)
+        return await asyncio.wait_for(
+            asyncio.to_thread(_discover_route, origin, destination),
+            timeout=DISCOVERY_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "AbhiBus route discovery for %s->%s exceeded %.0fs; treating as "
+            "unserved.", origin, destination, DISCOVERY_TIMEOUT,
+        )
+        return None
     except ScraperUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -313,8 +331,16 @@ def _extract_fare(lines: list[str]) -> Optional[int]:
     return min(candidates) if candidates else None
 
 
-def _scrape(url: str) -> list[dict[str, Any]]:
-    """Scrape a prepared search URL. Runs in a worker thread."""
+def _scrape(url: str, max_cards: int = 40) -> list[dict[str, Any]]:
+    """Scrape a prepared search URL. Runs in a worker thread.
+
+    ``max_cards`` exists for a measured reason: every ``element.text`` is a
+    round trip to the browser, and a busy corridor lists well over a hundred
+    services. Parsing all of them to return the cheapest ten took Delhi→Agra
+    past its 85-second budget and lost the result entirely, while Delhi→Jaipur
+    (a shorter list) finished in 66. We sort by fare afterwards, so reading a
+    generous prefix costs nothing real.
+    """
     logger.info("abhibus scrape: %s", url)
 
     buses: list[dict[str, Any]] = []
@@ -345,7 +371,11 @@ def _scrape(url: str) -> list[dict[str, Any]]:
         if "no buses" in page_text or "no services" in page_text:
             return []
 
-        for card in find_all_first(driver, _card_selectors()):
+        cards = find_all_first(driver, _card_selectors())
+        if len(cards) > max_cards:
+            logger.info("abhibus: %d services listed, parsing the first %d.",
+                        len(cards), max_cards)
+        for card in cards[:max_cards]:
             parsed = _parse_card(card)
             if parsed and (parsed["departure"] or parsed["fare_inr"]):
                 parsed["booking_link"] = url
@@ -363,7 +393,10 @@ def _scrape(url: str) -> list[dict[str, Any]]:
 
 
 @cached("buses", ttl=settings.ttl_buses)
-@resilient("abhibus", timeout=90.0, retries=1, recovery_seconds=180)
+# retries=0 deliberately: the failure mode here is a slow page, and a second
+# 90-second attempt could only ever be cancelled by the caller's own budget.
+# Two attempts made the bus the one provider that could not finish in time.
+@resilient("abhibus", timeout=85.0, retries=0, recovery_seconds=180)
 async def search_buses(
     origin: str, destination: str, travel_date: str, limit: int = 10
 ) -> dict[str, Any]:

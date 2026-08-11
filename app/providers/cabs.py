@@ -32,20 +32,37 @@ _RATE_CARD = {
 }
 
 
-@cached("cabs:distance", ttl=settings.ttl_cabs)
-async def estimate_distance_km(origin: str, destination: str) -> Optional[float]:
-    """Ask the LLM for a road distance. Cached hard — it never changes."""
+@cached("cabs:road", ttl=settings.ttl_cabs)
+async def estimate_road_journey(origin: str, destination: str) -> dict[str, Any]:
+    """Road distance **and driving time**. Cached hard — neither changes.
+
+    The driving time was already being asked for and then thrown away, which
+    mattered once connecting legs became real: dividing distance by an assumed
+    speed says Shimla→Chandigarh is 2 hours, when 113 km of hill road is nearer
+    4. Getting that wrong turns "leave by 08:00" into a missed flight.
+    """
     try:
         data = await llm_provider.ask_json(
-            f"What is the approximate road driving distance from {origin} to "
-            f"{destination} in India?\n"
+            f"What is the approximate road driving distance and typical driving "
+            f"time from {origin} to {destination} in India? Account for terrain — "
+            f"hill roads are much slower than highways.\n"
             'Reply with JSON only: {"km": <number>, "hours": <number>}'
         )
-        km = float(data.get("km", 0))
-        return km if km > 0 else None
+        km = float(data.get("km", 0) or 0)
+        hours = float(data.get("hours", 0) or 0)
+        if km <= 0:
+            return {"km": None, "hours": None}
+        if hours <= 0:
+            hours = km / 45.0  # last resort: a plain intercity average
+        return {"km": km, "hours": hours}
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Distance estimate failed for %s->%s: %s", origin, destination, exc)
-        return None
+        logger.warning("Road estimate failed for %s->%s: %s", origin, destination, exc)
+        return {"km": None, "hours": None}
+
+
+async def estimate_distance_km(origin: str, destination: str) -> Optional[float]:
+    """Road distance only. Kept as the narrow call most callers want."""
+    return (await estimate_road_journey(origin, destination)).get("km")
 
 
 @cached("cabs", ttl=settings.ttl_cabs)

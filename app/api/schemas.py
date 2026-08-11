@@ -99,8 +99,15 @@ class TripResponse(BaseModel):
     brief: dict[str, Any] = Field(default_factory=dict)
     transport_strategy: Optional[dict[str, Any]] = None
     transport_options: dict[str, Any] = Field(default_factory=dict)
+    return_options: dict[str, Any] = Field(default_factory=dict)
     transport_summary: Optional[str] = None
+    # Surface legs to/from a gateway city when the origin or destination has no
+    # airport or station of its own.
+    connecting_legs: list[dict[str, Any]] = Field(default_factory=list)
+    decision_rationale: Optional[dict[str, Any]] = None
+    date_flexibility: dict[str, Any] = Field(default_factory=dict)
     arrival_time: Optional[str] = None
+    arrival_date: Optional[str] = None
     weather: list[dict[str, Any]] = Field(default_factory=list)
     hotels: Optional[dict[str, Any]] = None
     hotels_summary: Optional[str] = None

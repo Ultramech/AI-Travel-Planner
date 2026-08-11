@@ -84,9 +84,34 @@ class Settings(BaseSettings):
     checkpoint_sqlite_path: str = "data/checkpoints/trips.sqlite"
 
     # --- Scraping ----------------------------------------------------------
+    #: Try connecting through a major hub when no direct flight exists.
+    flight_hub_routing: bool = True
+    #: How many hubs to try before giving up. Each costs two flight searches.
+    flight_hub_attempts: int = 2
+    #: Deployment environment. Chaos injection refuses to arm when this is
+    #: "production" — a fault injector nobody remembers enabling is
+    #: indistinguishable from a bug.
+    app_env: str = "development"
+
+    # --- fault injection (see app/core/chaos.py) -------------------------
+    #: Comma-separated provider names to fail, or "all". Empty disables.
+    chaos_providers: str = ""
+    #: error | timeout | empty
+    chaos_mode: str = "error"
+    chaos_probability: float = 1.0
+
+    #: Days either side of the requested date to price-check. 0 disables.
+    flexible_date_window: int = 3
+    #: Search the journey home as well as the journey out.
+    plan_return_journey: bool = True
     scraper_enabled: bool = True
     scraper_headless: bool = True
     scraper_timeout_seconds: int = 35
+    #: Concurrent browser sessions. Selenium standalone serves a fixed
+    #: number; beyond it sessions queue, so keep this at or below the grid.
+    scraper_max_sessions: int = 4
+    #: How long a scrape waits for a free browser slot before giving up.
+    scraper_queue_seconds: int = 60
     selenium_remote_url: str = ""
 
     # --- Service -----------------------------------------------------------
