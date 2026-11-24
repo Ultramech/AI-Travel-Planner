@@ -52,7 +52,7 @@ flowchart TB
 
     W --> R[(Redis<br/>cache + pub/sub)]
     W --> PG[(Postgres<br/>system of record)]
-    W --> P[Providers<br/>Google Flights · SerpAPI<br/>WeatherAPI · Groq · Selenium]
+    W --> P[Providers<br/>Google Flights · SerpAPI<br/>Open-Meteo · Groq/Gemini · Selenium]
 
     API -.->|read| PG
     API -.->|subscribe| R
@@ -102,7 +102,7 @@ The whole stack, one command:
 
 ```bash
 cp .env.example .env
-$EDITOR .env              # add GROQ_API_KEY — the only mandatory value
+$EDITOR .env              # add an LLM key (GROQ_API_KEY or GEMINI_API_KEY) — the only mandatory value
 docker compose up -d      # postgres · kafka · redis · selenium · api · worker×2 · ui
 ```
 
@@ -124,7 +124,7 @@ make graph            # print the mermaid topology
 
 </details>
 
-**Nothing is mandatory except `GROQ_API_KEY`.** Every other dependency degrades instead of failing:
+**Nothing is mandatory except one LLM key** (`GROQ_API_KEY` or `GEMINI_API_KEY`, matching `LLM_PROVIDER`). Weather comes from Open-Meteo and needs no key. Every other dependency degrades instead of failing:
 
 | Missing | What happens |
 |---|---|
@@ -139,9 +139,9 @@ With **zero** credentials beyond Groq the graph still reaches a coherent review 
 
 | Variable | Needed? | Gains |
 |---|---|---|
-| `GROQ_API_KEY` | **required** | the LLM behind extraction, routing and itinerary text |
+| `LLM_PROVIDER` | optional | `gemini` (default) or `groq` |
+| `GEMINI_API_KEY` / `GROQ_API_KEY` | **required** (the active one) | the LLM behind extraction, routing and itinerary text |
 | `DATABASE_URL` | recommended | durable history, shared checkpoints across workers |
-| `WEATHER_API_KEY` | optional | weather in the itinerary (weatherapi.com, 14-day horizon) |
 | `SERPAPI_KEY` | optional | real hotel prices, and a hotel line in the budget |
 | `TAVILY_API_KEY` | optional | live cab fares instead of distance-based estimates |
 | `AMADEUS_CLIENT_ID` / `_SECRET` | optional | bookable flight offers — **flights work with no key at all** |

@@ -11,10 +11,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+# Used when LLM_MODEL / LLM_EXTRACTOR_MODEL are left empty.
+DEFAULT_LLM_MODELS = {"gemini": "gemini-2.5-flash", "groq": "openai/gpt-oss-120b"}
 
 
 class Settings(BaseSettings):
@@ -26,13 +30,21 @@ class Settings(BaseSettings):
     )
 
     # --- LLM ---------------------------------------------------------------
+    # Which LLM backend every node uses. Empty model names fall back to the
+    # provider's default below, so switching provider is a one-line change.
+    llm_provider: Literal["gemini", "groq"] = "gemini"
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("gemini_api_key", "google_api_key"),
+    )
     groq_api_key: str = ""
-    llm_model: str = "llama-3.3-70b-versatile"
-    llm_extractor_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = ""
+    llm_extractor_model: str = ""
     llm_temperature: float = 0.2
     llm_max_retries: int = 3
 
     # --- Providers ---------------------------------------------------------
+    # Unused since weather moved to Open-Meteo (keyless); kept so old .env files load.
     weather_api_key: str = ""
     serpapi_key: str = ""
     amadeus_client_id: str = ""
@@ -142,6 +154,24 @@ class Settings(BaseSettings):
         p = PROJECT_ROOT / self.checkpoint_sqlite_path
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
+
+    # --- LLM helpers -------------------------------------------------------
+    @property
+    def llm_key_name(self) -> str:
+        """The settings field holding the active provider's API key."""
+        return "gemini_api_key" if self.llm_provider == "gemini" else "groq_api_key"
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(getattr(self, self.llm_key_name))
+
+    @property
+    def resolved_llm_model(self) -> str:
+        return self.llm_model or DEFAULT_LLM_MODELS[self.llm_provider]
+
+    @property
+    def resolved_extractor_model(self) -> str:
+        return self.llm_extractor_model or self.resolved_llm_model
 
     def require(self, *names: str) -> None:
         """Fail loudly and early when a needed credential is absent."""

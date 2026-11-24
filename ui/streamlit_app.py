@@ -782,12 +782,32 @@ def render_transport(trip: dict) -> None:
 # Rendering — weather, hotels, cost
 # ---------------------------------------------------------------------------
 
-def render_weather(days: list[dict]) -> None:
+_NOT_YET_FETCHED = (
+    '<div class="tp-note">{what} is fetched after you approve the transport '
+    "option above.</div>"
+)
+
+
+def _enriched(trip: dict) -> bool:
+    """Has the enrich step (weather + hotels) run for this trip yet?"""
+    return "weather" in (trip.get("provider_health") or {})
+
+
+def render_weather(days: list[dict], trip: Optional[dict] = None) -> None:
     if not days:
+        if trip is not None and not _enriched(trip):
+            st.markdown(_NOT_YET_FETCHED.format(what="Weather"), unsafe_allow_html=True)
+            return
+        health = ((trip or {}).get("provider_health") or {}).get("weather", "")
+        reason = (
+            f"The weather service failed: {esc(health[len('failed: '):], '')}"
+            if str(health).startswith("failed")
+            else "The trip dates may be in the past."
+        )
         st.markdown(
-            '<div class="tp-note">Weather data was not available for this trip. '
-            "Forecasts only reach ~14 days ahead; further-out days are reported "
-            "as beyond the horizon rather than guessed.</div>",
+            f'<div class="tp-note">Weather data was not available for this trip. {reason} '
+            "Forecasts reach 16 days ahead; further-out days are reported as beyond "
+            "the horizon rather than guessed.</div>",
             unsafe_allow_html=True,
         )
         return
@@ -823,7 +843,10 @@ def render_weather(days: list[dict]) -> None:
     st.markdown(f'<div class="tp-wx">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
-def render_hotels(hotels: Optional[dict]) -> None:
+def render_hotels(hotels: Optional[dict], trip: Optional[dict] = None) -> None:
+    if (not hotels or not hotels.get("hotels")) and trip is not None and not _enriched(trip):
+        st.markdown(_NOT_YET_FETCHED.format(what="Hotel pricing"), unsafe_allow_html=True)
+        return
     if not hotels or not hotels.get("hotels"):
         st.markdown(
             '<div class="tp-note">No hotel options were retrieved. '
@@ -1298,10 +1321,10 @@ with transport_tab:
     render_transport(trip)
 
 with weather_tab:
-    render_weather(trip.get("weather") or [])
+    render_weather(trip.get("weather") or [], trip)
 
 with hotels_tab:
-    render_hotels(trip.get("hotels"))
+    render_hotels(trip.get("hotels"), trip)
 
 with plan_tab:
     if trip.get("itinerary"):

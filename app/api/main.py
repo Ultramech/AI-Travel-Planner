@@ -37,8 +37,11 @@ async def lifespan(app: FastAPI):
     await bus.start()
     await get_graph()  # compile + open the checkpointer up front
 
-    if not settings.groq_api_key:
-        logger.warning("GROQ_API_KEY is not set — planning requests will fail.")
+    if not settings.llm_configured:
+        logger.warning("%s is not set — planning requests will fail.",
+                       settings.llm_key_name.upper())
+    else:
+        logger.info("LLM: %s / %s", settings.llm_provider, settings.resolved_llm_model)
 
     try:
         yield

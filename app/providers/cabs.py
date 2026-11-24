@@ -119,7 +119,12 @@ async def search_cabs(
 async def _tavily_quote(
     origin: str, destination: str, travel_date: Optional[str], persons: int
 ) -> Optional[str]:
-    from langchain_tavily import TavilySearch  # optional dependency
+    """Search live outstation cab fares via Tavily's REST API.
+
+    Called directly over httpx: the previous ``langchain_tavily`` import was
+    never in requirements.txt, so setting TAVILY_API_KEY silently did nothing.
+    """
+    import httpx
 
     query = (
         f"outstation cab taxi fare from {origin} to {destination} India "
@@ -127,11 +132,20 @@ async def _tavily_quote(
     )
     if travel_date:
         query += f" on {travel_date}"
-    tool = TavilySearch(max_results=3, tavily_api_key=settings.tavily_api_key)
-    import asyncio
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(
+            "https://api.tavily.com/search",
+            headers={"Authorization": f"Bearer {settings.tavily_api_key}"},
+            json={"query": query, "max_results": 3, "include_answer": True},
+        )
+        response.raise_for_status()
+        data = response.json()
 
-    result = await asyncio.to_thread(tool.invoke, query)
-    return str(result)[:2000]
+    parts = [data.get("answer") or ""]
+    for item in data.get("results") or []:
+        parts.append(f"- {item.get('title', '')}: {item.get('content', '')} ({item.get('url', '')})")
+    text = "\n".join(p for p in parts if p).strip()
+    return text[:2000] or None
 
 
 def render(result: dict[str, Any]) -> str:
