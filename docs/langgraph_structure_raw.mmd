@@ -1,0 +1,33 @@
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	extract_brief(extract_brief)
+	plan_transport_strategy(plan_transport_strategy)
+	search_transport(search_transport)
+	recommend_transport(recommend_transport)
+	human_review_transport(human_review_transport)
+	enrich(enrich)
+	build_itinerary(build_itinerary)
+	human_review_plan(human_review_plan)
+	finalise(finalise)
+	failed(failed)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> extract_brief;
+	build_itinerary --> human_review_plan;
+	enrich --> build_itinerary;
+	failed --> __end__;
+	finalise --> __end__;
+	plan_transport_strategy --> search_transport;
+	recommend_transport --> human_review_transport;
+	search_transport --> recommend_transport;
+	extract_brief -.-> plan_transport_strategy;
+	extract_brief -.-> failed;
+	human_review_transport -.-> enrich;
+	human_review_transport -.-> plan_transport_strategy;
+	human_review_plan -.-> finalise;
+	human_review_plan -.-> build_itinerary;
+	human_review_plan -.-> enrich;
+	human_review_plan -.-> plan_transport_strategy;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

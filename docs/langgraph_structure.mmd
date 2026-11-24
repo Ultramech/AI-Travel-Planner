@@ -1,0 +1,40 @@
+%%{init: {'flowchart': {'curve': 'basis'}}}%%
+graph TD;
+    __start__([__start__]):::first
+    extract_brief["extract_brief<br/><i>LLM brief: origin, destination, dates</i>"]
+    plan_transport_strategy["plan_transport_strategy<br/><i>pick modes + legs/gateways</i>"]
+    search_transport["search_transport<br/><i>fan-out: flights / trains / buses / cabs</i>"]
+    recommend_transport["recommend_transport<br/><i>score + rationale</i>"]
+    human_review_transport{{"human_review_transport<br/><i>interrupt()</i>"}}
+    enrich["enrich<br/><i>hotels, weather, geo</i>"]
+    build_itinerary["build_itinerary<br/><i>day-wise plan</i>"]
+    human_review_plan{{"human_review_plan<br/><i>interrupt()</i>"}}
+    finalise["finalise"]
+    failed["failed<br/><i>fatal error</i>"]
+    __end__([__end__]):::last
+
+    __start__ --> extract_brief;
+    extract_brief -. "origin &amp; destination found" .-> plan_transport_strategy;
+    extract_brief -. "missing origin/destination" .-> failed;
+    failed --> __end__;
+
+    plan_transport_strategy --> search_transport;
+    search_transport --> recommend_transport;
+    recommend_transport --> human_review_transport;
+
+    human_review_transport -. "approve" .-> enrich;
+    human_review_transport -. "revise* &amp; count &le; 3" .-> plan_transport_strategy;
+
+    enrich --> build_itinerary;
+    build_itinerary --> human_review_plan;
+
+    human_review_plan -. "revise_plan" .-> build_itinerary;
+    human_review_plan -. "revise_hotels" .-> enrich;
+    human_review_plan -. "revise_transport" .-> plan_transport_strategy;
+    human_review_plan -. "approve / cap hit (&gt;3)" .-> finalise;
+
+    finalise --> __end__;
+
+    classDef default fill:#f2f0ff,stroke:#7c6bd8,line-height:1.3
+    classDef first fill-opacity:0,stroke:#7c6bd8
+    classDef last fill:#bfb6fc,stroke:#7c6bd8
