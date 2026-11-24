@@ -18,6 +18,9 @@ langchain-core==0.3.29
 langchain==0.3.14
 langchain-community==0.3.14
 langchain-groq==0.2.3
+# Gemini is reached through its OpenAI-compatible endpoint. langchain-google-genai
+# is NOT usable here: it pins protobuf<6, fast-flights needs protobuf>=7.
+langchain-openai==0.3.0
 langchain-text-splitters==0.3.5
 
 # --- Infrastructure --------------------------------------------------------

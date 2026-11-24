@@ -20,20 +20,58 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
 
 @lru_cache(maxsize=8)
 def get_llm(model: Optional[str] = None, temperature: Optional[float] = None) -> Any:
-    """Return a cached ChatGroq client."""
-    settings.require("groq_api_key")
+    """Return a cached chat client for the configured provider (Gemini or Groq)."""
+    settings.require(settings.llm_key_name)
+    model = model or settings.resolved_llm_model
+    temperature = settings.llm_temperature if temperature is None else temperature
+
+    if settings.llm_provider == "gemini":
+        # Gemini's OpenAI-compatible endpoint. The native langchain-google-genai
+        # package can't be installed alongside fast-flights (protobuf conflict).
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            api_key=settings.gemini_api_key,
+            base_url=GEMINI_OPENAI_BASE_URL,
+            model=model,
+            temperature=temperature,
+            max_retries=settings.llm_max_retries,
+            timeout=60,
+        )
+
     from langchain_groq import ChatGroq
 
     return ChatGroq(
         api_key=settings.groq_api_key,
-        model=model or settings.llm_model,
-        temperature=settings.llm_temperature if temperature is None else temperature,
+        model=model,
+        temperature=temperature,
         max_retries=settings.llm_max_retries,
         timeout=60,
     )
+
+
+def _content_text(content: Any) -> str:
+    """Flatten message content to text.
+
+    Gemini can return a list of parts (text plus thinking/metadata blocks)
+    instead of a plain string; only the text parts matter here.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type", "text") == "text":
+                parts.append(str(part.get("text", "")))
+        return "".join(parts)
+    return str(content or "")
 
 
 async def ainvoke(
@@ -45,7 +83,7 @@ async def ainvoke(
     """Invoke the LLM and return plain text."""
     llm = get_llm(model, temperature)
     response = await llm.ainvoke(messages)
-    return (response.content or "").strip()
+    return _content_text(response.content).strip()
 
 
 async def ask(

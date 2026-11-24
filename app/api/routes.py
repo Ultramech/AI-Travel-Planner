@@ -78,8 +78,11 @@ async def health() -> HealthResponse:
         # that failed and fell back must not be able to hide behind config.
         "checkpointer": _active_checkpointer() or settings.checkpointer_backend,
         "checkpointer_configured": settings.checkpointer_backend,
-        "llm_configured": bool(settings.groq_api_key),
-        "weather_configured": bool(settings.weather_api_key),
+        "llm_configured": settings.llm_configured,
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.resolved_llm_model,
+        "weather_configured": True,  # Open-Meteo, no key needed
+        "weather_source": "open-meteo",
         "hotels_configured": bool(settings.serpapi_key),
         # Flights never need a key: Google Flights is the keyless default and
         # Amadeus is an optional upgrade to bookable offers.
@@ -91,7 +94,7 @@ async def health() -> HealthResponse:
         },
         "scraping": "enabled" if settings.scraper_enabled else "disabled",
     }
-    degraded = not settings.groq_api_key or any(
+    degraded = not settings.llm_configured or any(
         b["state"] != "closed" for b in all_breakers()
     )
     return HealthResponse(
@@ -111,10 +114,10 @@ async def liveness() -> dict[str, str]:
 @router.get("/health/ready", tags=["health"])
 async def readiness(response: Response) -> dict[str, object]:
     """Ready only when we can actually plan — i.e. the LLM is configured."""
-    ready = bool(settings.groq_api_key)
+    ready = settings.llm_configured
     if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return {"ready": ready, "reason": None if ready else "GROQ_API_KEY not set"}
+    return {"ready": ready, "reason": None if ready else f"{settings.llm_key_name.upper()} not set"}
 
 
 # ---------------------------------------------------------------------------

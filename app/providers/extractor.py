@@ -164,7 +164,7 @@ Text:
 \"\"\"{user_input}\"\"\"
 """
     return await llm_provider.ask_json(prompt, system=_SYSTEM,
-                                       model=settings.llm_extractor_model)
+                                       model=settings.resolved_extractor_model)
 
 
 async def build_brief(
